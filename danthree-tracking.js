@@ -1,144 +1,122 @@
-/* Danthree Tracking
-   Enthaelt: Stape User ID + source_url, Ads-Attribution, Herkunft
-   Ersetzt die frueheren Footer-Abschnitte 5, 6 und 7 */
-
-/* ---------- 5. Stape User ID + source_url ---------- */
+/* Danthree form attribution. Consent-aware revision 2026-09-28.
+   source_url remains available for form routing. Optional attribution requires
+   Cookiebot consent. Existing form names, transport and recipients are unchanged. */
 (function () {
-  function getStapeUserId() {
-    var cookies = document.cookie.split(';');
-    var match = cookies.map(function (c) { return c.trim(); })
-                       .find(function (c) { return c.indexOf('stape=') === 0; });
-    if (!match) return null;
-    try {
-      return JSON.parse(decodeURIComponent(match.substring(6))).user_id || null;
-    } catch (e) { return null; }
+  'use strict';
+  var MAX_AGE = 90 * 864e5;
+  var ADS = 'dt_attribution';
+  var SOURCE = 'dt_herkunft';
+  var consentReady = false;
+
+  function consent(category) {
+    return !!(window.Cookiebot && window.Cookiebot.consent &&
+      window.Cookiebot.hasResponse && window.Cookiebot.consent[category] === true);
   }
-
-  function injectTrackingData() {
-    var userId = getStapeUserId();
-    var currentUrl = window.location.href;
-    var idFields = document.querySelectorAll('input[id="custom_user_id"], input[name="custom_user_id"]');
-    var urlFields = document.querySelectorAll('input[id="source_url"], input[name="source_url"]');
-    var success = false;
-
-    if (userId && idFields.length) {
-      idFields.forEach(function (f) { f.value = userId; });
-      success = true;
-    }
-    if (currentUrl && urlFields.length) {
-      urlFields.forEach(function (f) { f.value = currentUrl; });
-    }
-    return success;
+  function field(name, value) {
+    document.querySelectorAll('input[name="' + name + '"], input[id="' + name + '"]')
+      .forEach(function (el) { el.value = value || ''; });
   }
-
-  document.addEventListener('DOMContentLoaded', function () {
-    if (!injectTrackingData()) {
-      setTimeout(function () {
-        if (!injectTrackingData()) { setTimeout(injectTrackingData, 3000); }
-      }, 1000);
-    }
-  });
-})();
-
-/* ---------- 6. Ads-Attribution (gclid + UTM), First-Touch, 90 Tage ---------- */
-(function () {
-  var KEY = 'dt_attribution';
-  var MAX_AGE_DAYS = 90;
-
-  function readStored() {
+  function forget(key) {
+    try { window.localStorage.removeItem(key); } catch (e) {}
+  }
+  function stored(key) {
     try {
-      var raw = localStorage.getItem(KEY);
+      var raw = window.localStorage.getItem(key);
       if (!raw) return null;
-      var d = JSON.parse(raw);
-      if (!d.ts || (Date.now() - d.ts) > MAX_AGE_DAYS * 864e5) return null;
-      return d;
-    } catch (e) { return null; }
+      var data = JSON.parse(raw);
+      if (!data || typeof data.ts !== 'number' || !isFinite(data.ts) ||
+          data.ts > Date.now() || Date.now() - data.ts >= MAX_AGE) {
+        forget(key);
+        return null;
+      }
+      return data;
+    } catch (e) { forget(key); return null; }
   }
-
-  function captureFirstTouch() {
-    var p = new URLSearchParams(window.location.search);
-    var gclid = p.get('gclid') || (p.get('gbraid') ? 'gbraid:' + p.get('gbraid') : '') ||
-                (p.get('wbraid') ? 'wbraid:' + p.get('wbraid') : '');
-    var us = p.get('utm_source') || '';
-    var uc = p.get('utm_campaign') || '';
-    if (!gclid && !us && !uc) return;
-    if (readStored()) return;
+  function save(key, value) {
+    try { window.localStorage.setItem(key, JSON.stringify(value)); } catch (e) {}
+    return value;
+  }
+  function pageUrl() {
+    // The form route needs the page/language, not query strings or fragments.
+    return window.location.origin + window.location.pathname;
+  }
+  function cleanUrl(value) {
+    try { var url = new URL(value); return /^https?:$/.test(url.protocol) ? url.origin + url.pathname : ''; }
+    catch (e) { return ''; }
+  }
+  function referrer() {
     try {
-      localStorage.setItem(KEY, JSON.stringify({ gclid: gclid, utm_source: us, utm_campaign: uc, ts: Date.now() }));
-    } catch (e) {}
+      if (!document.referrer) return 'direkt';
+      var ref = new URL(document.referrer);
+      if (!/^https?:$/.test(ref.protocol)) return 'direkt';
+      var host = window.location.hostname.replace(/^www\./, '');
+      return ref.hostname.replace(/^www\./, '') === host ? 'direkt' : ref.origin + ref.pathname;
+    } catch (e) { return 'direkt'; }
   }
-
-  function injectAttribution() {
-    var d = readStored();
-    if (!d) return true;
-    var map = { gclid: d.gclid, utm_source: d.utm_source, utm_campaign: d.utm_campaign };
-    var found = false;
-    Object.keys(map).forEach(function (name) {
-      var fields = document.querySelectorAll('input[name="' + name + '"], input[id="' + name + '"]');
-      if (fields.length) found = true;
-      fields.forEach(function (f) { f.value = map[name] || ''; });
-    });
-    return found;
-  }
-
-  captureFirstTouch();
-  document.addEventListener('DOMContentLoaded', function () {
-    if (!injectAttribution()) {
-      setTimeout(function () {
-        if (!injectAttribution()) { setTimeout(injectAttribution, 3000); }
-      }, 1000);
+  function userId() {
+    var parts = document.cookie.split(';');
+    for (var i = 0; i < parts.length; i++) {
+      var item = parts[i].trim();
+      if (item.indexOf('stape=') === 0) {
+        try { return JSON.parse(decodeURIComponent(item.substring(6))).user_id || ''; }
+        catch (e) { return ''; }
+      }
     }
-  });
-})();
-
-/* ---------- 7. Herkunft (referrer + landing_page), First-Touch, 90 Tage ---------- */
-(function () {
-  var KEY = 'dt_herkunft';
-  var MAX_AGE_DAYS = 90;
-  var HOST = window.location.hostname.replace(/^www\./, '');
-
-  function readStored() {
-    try {
-      var raw = localStorage.getItem(KEY);
-      if (!raw) return null;
-      var d = JSON.parse(raw);
-      if (!d.ts || (Date.now() - d.ts) > MAX_AGE_DAYS * 864e5) return null;
-      return d;
-    } catch (e) { return null; }
+    return '';
   }
-
-  function captureFirstTouch() {
-    if (readStored()) return;
-    var ref = document.referrer || '';
-    var istExtern = ref && ref.indexOf(HOST) === -1;
-    try {
-      localStorage.setItem(KEY, JSON.stringify({
-        referrer: istExtern ? ref : 'direkt',
-        landing_page: window.location.href,
-        ts: Date.now()
-      }));
-    } catch (e) {}
-  }
-
-  function injectHerkunft() {
-    var d = readStored();
-    if (!d) return true;
-    var map = { referrer: d.referrer, landing_page: d.landing_page };
-    var found = false;
-    Object.keys(map).forEach(function (name) {
-      var fields = document.querySelectorAll('input[name="' + name + '"], input[id="' + name + '"]');
-      if (fields.length) found = true;
-      fields.forEach(function (f) { f.value = map[name] || ''; });
-    });
-    return found;
-  }
-
-  captureFirstTouch();
-  document.addEventListener('DOMContentLoaded', function () {
-    if (!injectHerkunft()) {
-      setTimeout(function () {
-        if (!injectHerkunft()) { setTimeout(injectHerkunft, 3000); }
-      }, 1000);
+  function refresh() {
+    field('source_url', pageUrl());
+    var statistics = consent('statistics');
+    var marketing = consent('marketing');
+    if (statistics) {
+      var source = stored(SOURCE) || save(SOURCE, {
+        referrer: referrer(), landing_page: pageUrl(), ts: Date.now()
+      });
+      field('referrer', source.referrer === 'direkt' ? 'direkt' : cleanUrl(source.referrer));
+      field('landing_page', cleanUrl(source.landing_page));
+    } else {
+      field('referrer', '');
+      field('landing_page', '');
+      if (consentReady) forget(SOURCE);
     }
+    // A cross-visit identifier is only forwarded with both optional categories.
+    field('custom_user_id', statistics && marketing ? userId() : '');
+    var ad = null;
+    if (marketing) {
+      ad = stored(ADS);
+      if (!ad) {
+        var params = new URLSearchParams(window.location.search);
+        var gclid = params.get('gclid') ||
+          (params.get('gbraid') ? 'gbraid:' + params.get('gbraid') : '') ||
+          (params.get('wbraid') ? 'wbraid:' + params.get('wbraid') : '');
+        var sourceName = params.get('utm_source') || '';
+        var campaign = params.get('utm_campaign') || '';
+        if (gclid || sourceName || campaign) ad = save(ADS, {
+          gclid: gclid, utm_source: sourceName, utm_campaign: campaign, ts: Date.now()
+        });
+      }
+    } else if (consentReady) { forget(ADS); }
+    ['gclid', 'utm_source', 'utm_campaign'].forEach(function (name) {
+      field(name, ad && ad[name]);
+    });
+  }
+  function onConsent() {
+    consentReady = true;
+    refresh();
+    window.setTimeout(refresh, 1000);
+    window.setTimeout(refresh, 4000);
+  }
+  ['CookiebotOnConsentReady', 'CookiebotOnAccept', 'CookiebotOnDecline'].forEach(function (event) {
+    window.addEventListener(event, onConsent);
   });
+  function start() {
+    if (window.Cookiebot && window.Cookiebot.hasResponse) consentReady = true;
+    refresh();
+    window.setTimeout(refresh, 1000);
+    window.setTimeout(refresh, 4000);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
+  else start();
+  // Capture phase refreshes existing fields before native form serialization.
+  document.addEventListener('submit', refresh, true);
 })();
